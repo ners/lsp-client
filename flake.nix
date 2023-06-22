@@ -5,16 +5,12 @@
   outputs = inputs:
     let
       lib = inputs.nixpkgs.lib;
-      attrsToList = with lib; mapAttrsToList nameValuePair;
-      foreach = xs: f: with lib; foldr recursiveUpdate { } (map f xs);
-      foreachAttrs = attrs: f: with lib; pipe attrs [
-        attrsToList
-        (xs: foreach xs ({ name, value }: f name value))
-      ];
-      foreachFilterAttrs = attrs: p: f: with lib; pipe attrs [
-        (filterAttrs p)
-        (attrs: foreachAttrs attrs f)
-      ];
+      foreach = xs: f: with lib; foldr recursiveUpdate { } (
+        if isList xs then map f xs
+        else if isAttrs xs then mapAttrsToList f xs
+        else error "foreach: expected list or attrset"
+      );
+
       pname = "lsp-client";
       src = inputs.nix-filter.lib {
         root = ./.;
@@ -26,8 +22,8 @@
         ];
       };
     in
-    foreachAttrs inputs.nixpkgs.legacyPackages (system: pkgs:
-      foreachFilterAttrs pkgs.haskell.packages (name: _: builtins.match "ghc[0-9]+" name != null)
+    foreach inputs.nixpkgs.legacyPackages (system: pkgs:
+      foreach (lib.filterAttrs  (name: _: builtins.match "ghc[0-9]+" name != null) pkgs.haskell.packages)
         (ghcName: haskellPackages:
           let
             hp = haskellPackages.override {
