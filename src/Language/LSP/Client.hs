@@ -15,7 +15,7 @@ import Language.LSP.Client.Decoding
 import Language.LSP.Client.Encoding (encode)
 import Language.LSP.Client.Session
 import Language.LSP.Protocol.Message qualified as LSP
-import Language.LSP.VFS (initVFS)
+import Language.LSP.VFS (emptyVFS)
 import System.IO (Handle)
 import UnliftIO (concurrently_, race)
 import Prelude
@@ -31,8 +31,8 @@ runSessionWithHandles
     -> Session a
     -- ^ Session actions
     -> IO a
-runSessionWithHandles input output action = initVFS $ \vfs -> do
-    initialState <- defaultSessionState vfs
+runSessionWithHandles input output action = do
+    initialState <- defaultSessionState emptyVFS
     flip runReaderT initialState $ do
         actionResult <- race action $ do
             let send = do
