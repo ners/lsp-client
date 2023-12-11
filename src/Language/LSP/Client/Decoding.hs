@@ -19,7 +19,7 @@ import Data.IxMap (IxMap)
 import Data.IxMap qualified as IxMap
 import Data.Maybe (fromJust, fromMaybe)
 import Language.LSP.Client.Exceptions
-import Language.LSP.Types
+import Language.LSP.Protocol.Message (FromServerMessage, FromServerMessage' (FromServerMess, FromServerRsp), LspId, MessageDirection (..), MessageKind (..), Method, SClientMethod, SMethod, TNotificationMessage, TResponseMessage (..), parseServerMessage)
 import System.IO (Handle, hGetLine)
 import System.IO.Error (isEOFError)
 import Prelude hiding (id)
@@ -50,9 +50,9 @@ type RequestMap = IxMap LspId RequestCallback
 emptyRequestMap :: RequestMap
 emptyRequestMap = IxMap.emptyIxMap
 
-data RequestCallback (m :: Method 'FromClient 'Request) = RequestCallback
-    { requestCallback :: ResponseMessage m -> IO ()
-    , requestMethod :: SMethod m
+data RequestCallback (m :: Method 'ClientToServer 'Request) = RequestCallback
+    { requestCallback :: TResponseMessage m -> IO ()
+    , requestMethod :: SClientMethod m
     }
 
 type NotificationMap = DMap SMethod NotificationCallback
@@ -60,8 +60,8 @@ type NotificationMap = DMap SMethod NotificationCallback
 emptyNotificationMap :: NotificationMap
 emptyNotificationMap = mempty
 
-newtype NotificationCallback (m :: Method 'FromServer 'Notification) = NotificationCallback
-    { notificationCallback :: Message m -> IO ()
+newtype NotificationCallback (m :: Method 'ServerToClient 'Notification) = NotificationCallback
+    { notificationCallback :: TNotificationMessage m -> IO ()
     }
 
 instance Semigroup (NotificationCallback m) where
@@ -76,7 +76,7 @@ updateRequestMap = ((fromMaybe (error "updateRequestMap: duplicate key registrat
 appendNotificationCallback :: SMethod m -> NotificationCallback m -> NotificationMap -> NotificationMap
 appendNotificationCallback = DMap.insertWith' (<>)
 
-removeNotificationCallback :: SMethod (m :: Method 'FromServer 'Notification) -> NotificationMap -> NotificationMap
+removeNotificationCallback :: SMethod (m :: Method 'ServerToClient 'Notification) -> NotificationMap -> NotificationMap
 removeNotificationCallback = DMap.delete
 
 decodeFromServerMsg :: LazyByteString -> RequestMap -> ((FromServerMessage, IO ()), RequestMap)
@@ -87,5 +87,6 @@ decodeFromServerMsg bytes reqMap = unP $ parse p obj
         let (maybeCallback, newMap) = IxMap.pickFromIxMap lid reqMap
          in maybeCallback <&> \c -> (c.requestMethod, Pair c (Const newMap))
     unP (Success (FromServerMess m msg)) = ((FromServerMess m msg, pure ()), reqMap)
-    unP (Success (FromServerRsp (Pair c (Const newMap)) msg)) = ((FromServerRsp c.requestMethod msg, c.requestCallback msg), newMap)
+    unP (Success (FromServerRsp (Pair c (Const newMap)) msg)) =
+        ((FromServerRsp c.requestMethod msg, c.requestCallback msg), newMap)
     unP (Error e) = error $ "Error decoding " <> show obj <> " :" <> e

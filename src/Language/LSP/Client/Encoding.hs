@@ -16,5 +16,5 @@ addHeader content =
         , content
         ]
 
-encode :: ToJSON a => a -> LazyByteString
+encode :: (ToJSON a) => a -> LazyByteString
 encode = addHeader . Aeson.encode
