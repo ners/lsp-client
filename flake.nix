@@ -23,46 +23,44 @@
           "lib"
           "src"
           "test"
-          "${pname}.cabal"
-          "LICENCE"
-          "CHANGELOG.md"
+          (inputs.nix-filter.lib.matchExt "cabal")
+          (inputs.nix-filter.lib.matchExt "md")
         ];
+      };
+      overlay = final: prev: {
+        haskell = prev.haskell // {
+          packageOverrides = lib.composeExtensions prev.haskell.packageOverrides (hfinal: hprev:
+            with prev.haskell.lib.compose;
+            {
+              "${pname}" = hfinal.callCabal2nix pname (hsSrc pname ./.) {
+                unix-compat = hfinal.callCabal2nix "unix-compat" inputs.unix-compat { };
+              };
+            }
+          );
+        };
       };
       pname = "lsp-client";
     in
-    foreach inputs.nixpkgs.legacyPackages (system: pkgs:
-      let
-        defaultGhc = builtins.replaceStrings ["-" "."] ["" ""] pkgs.haskellPackages.ghc.name;
-      in
-      lib.recursiveUpdate
+    foreach inputs.nixpkgs.legacyPackages
+      (system: pkgs':
+        let pkgs = pkgs'.extend overlay; in
         {
           formatter.${system} = pkgs.nixpkgs-fmt;
-          packages.${system}.default = inputs.self.packages.${system}.${defaultGhc}.${pname};
-          devShells.${system}.default = inputs.self.devShells.${system}.${defaultGhc};
-        }
-        (foreach (lib.filterAttrs (name: _: builtins.match "ghc[0-9]+" name != null) pkgs.haskell.packages)
-          (ghcName: haskellPackages:
-            let
-              hp = haskellPackages.override {
-                overrides = self: super: {
-                  unix-compat = self.callCabal2nix "unix-compat" inputs.unix-compat { };
-                  "${pname}" = self.callCabal2nix pname (hsSrc pname ./.) { };
-                };
-              };
-            in
-            {
-              packages.${system}.${ghcName} = foreach [ pname ] (pname: {
-                "${pname}" = hp.${pname};
-              });
-              devShells.${system}.${ghcName} = hp.shellFor {
+          legacyPackages.${system} = pkgs;
+          packages.${system}.default = pkgs.haskellPackages.${pname};
+          devShells.${system} =
+            foreach (pkgs.haskell.packages // { default = pkgs.haskellPackages; }) (ghcName: hp: {
+              ${ghcName} = hp.shellFor {
                 packages = ps: [ ps.${pname} ];
-                nativeBuildInputs = with haskellPackages; [
+                nativeBuildInputs = with hp; [
                   cabal-install
                   fourmolu
                   haskell-language-server
                 ];
               };
-            }
-          )
-        ));
+            });
+        }
+      ) // {
+      overlays.default = overlay;
+    };
 }

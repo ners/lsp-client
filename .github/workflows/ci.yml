@@ -7,19 +7,14 @@ on:
 
 jobs:
   build:
-    strategy:
-      matrix:
-        ghc: ['ghc92', 'ghc94', 'ghc96']
-        target: ['lsp-client']
-        os: ['ubuntu-latest', 'macos-latest']
-    runs-on: ${{ matrix.os }}
-    name: Build ${{ matrix.ghc }}.${{ matrix.target }} on ${{ matrix.os }}
+    name: Nix build
+    runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
-    - uses: cachix/install-nix-action@v22
-    - name: Build
+    - uses: actions/checkout@v4
+    - uses: cachix/install-nix-action@v24
+    - name: Nix build
       run: |
         nix build \
           --accept-flake-config \
           --print-build-logs \
-          .#${{ matrix.ghc }}.${{ matrix.target }}
+          .#haskell.packages.ghc{92,94,96}.lsp-client
