@@ -7,7 +7,7 @@ import Data.Algorithm.Diff (getGroupedDiff)
 import Data.Algorithm.DiffOutput (ppDiff)
 import Data.ByteString.Lazy.Char8 qualified as LazyByteString
 import Data.List (nub)
-import Language.LSP.Types
+import Language.LSP.Protocol.Message
     ( FromServerMessage
     , ResponseError
     , SomeLspId

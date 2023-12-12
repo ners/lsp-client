@@ -1,53 +1,68 @@
 {
-  inputs.nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
-  inputs.nix-filter.url = "github:numtide/nix-filter";
+  inputs = {
+    nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
+    nix-filter.url = "github:numtide/nix-filter";
+    unix-compat = {
+      url = "github:haskell-pkg-janitors/unix-compat";
+      flake = false;
+    };
+  };
 
   outputs = inputs:
     let
-      lib = inputs.nixpkgs.lib;
+      inherit (inputs.nixpkgs) lib;
       foreach = xs: f: with lib; foldr recursiveUpdate { } (
         if isList xs then map f xs
         else if isAttrs xs then mapAttrsToList f xs
-        else error "foreach: expected list or attrset"
+        else error "foreach: expected list or attrset but got ${builtins.typeOf xs}"
       );
-
-      pname = "lsp-client";
-      src = inputs.nix-filter.lib {
-        root = ./.;
+      hsSrc = pname: root: inputs.nix-filter {
+        inherit root;
         include = [
+          "app"
+          "lib"
           "src"
           "test"
           "${pname}.cabal"
           "LICENCE"
+          "CHANGELOG.md"
         ];
       };
+      pname = "lsp-client";
     in
     foreach inputs.nixpkgs.legacyPackages (system: pkgs:
-      foreach (lib.filterAttrs  (name: _: builtins.match "ghc[0-9]+" name != null) pkgs.haskell.packages)
-        (ghcName: haskellPackages:
-          let
-            hp = haskellPackages.override {
-              overrides = self: super: builtins.trace "GHC ${super.ghc.version}" {
-                "${pname}" =  super.callCabal2nix pname src { };
-              } // lib.optionalAttrs (lib.versionAtLeast super.ghc.version "9.6") {
-                fourmolu = super.fourmolu_0_12_0_0;
+      let
+        defaultGhc = builtins.replaceStrings ["-" "."] ["" ""] pkgs.haskellPackages.ghc.name;
+      in
+      lib.recursiveUpdate
+        {
+          formatter.${system} = pkgs.nixpkgs-fmt;
+          packages.${system}.default = inputs.self.packages.${system}.${defaultGhc}.${pname};
+          devShells.${system}.default = inputs.self.devShells.${system}.${defaultGhc};
+        }
+        (foreach (lib.filterAttrs (name: _: builtins.match "ghc[0-9]+" name != null) pkgs.haskell.packages)
+          (ghcName: haskellPackages:
+            let
+              hp = haskellPackages.override {
+                overrides = self: super: {
+                  unix-compat = self.callCabal2nix "unix-compat" inputs.unix-compat { };
+                  "${pname}" = self.callCabal2nix pname (hsSrc pname ./.) { };
+                };
               };
-            };
-          in
-          {
-            packages.${system}.${ghcName}.${pname} = hp.${pname};
-            devShells.${system}.${ghcName} = hp.shellFor {
-              packages = ps: [ ps.${pname} ];
-              nativeBuildInputs = with hp; [
-                cabal-install
-                fourmolu
-                haskell-language-server
-              ];
-            };
-          }
-        ) //
-      {
-        formatter.${system} = pkgs.nixpkgs-fmt;
-      }
-    );
+            in
+            {
+              packages.${system}.${ghcName} = foreach [ pname ] (pname: {
+                "${pname}" = hp.${pname};
+              });
+              devShells.${system}.${ghcName} = hp.shellFor {
+                packages = ps: [ ps.${pname} ];
+                nativeBuildInputs = with haskellPackages; [
+                  cabal-install
+                  fourmolu
+                  haskell-language-server
+                ];
+              };
+            }
+          )
+        ));
 }
