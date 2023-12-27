@@ -4,13 +4,14 @@ version:             0.2.0.0
 synopsis:            Haskell library for Language Server Protocol clients
 homepage:            https://github.com/ners/lsp-client/blob/master/README.md
 license:             Apache-2.0
-license-file:        LICENCE
+license-file:        LICENCE.md
 author:              ners
 maintainer:          ners@gmx.ch
 bug-reports:         https://github.com/ners/lsp-client/issues
 category:            System
 build-type:          Simple
 extra-source-files:  CHANGELOG.md, README.md
+tested-with:         GHC == { 9.2, 9.4, 9.6 }
 
 source-repository head
   type:     git

@@ -7,19 +7,18 @@ on:
 
 jobs:
   build:
-    strategy:
-      matrix:
-        ghc: ['ghc92', 'ghc94', 'ghc96']
-        target: ['lsp-client']
-        os: ['ubuntu-latest', 'macos-latest']
-    runs-on: ${{ matrix.os }}
-    name: Build ${{ matrix.ghc }}.${{ matrix.target }} on ${{ matrix.os }}
+    name: Nix build
+    runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
-    - uses: cachix/install-nix-action@v22
-    - name: Build
+    - uses: actions/checkout@v4
+    - uses: cachix/install-nix-action@v24
+    - uses: ryanccn/attic-action@v0
+      with:
+        endpoint: https://cache.ners.ch
+        cache: haskell
+        token: ${{ secrets.ATTIC_TOKEN }}
+    - name: Nix check
       run: |
-        nix build \
+        nix flake check \
           --accept-flake-config \
-          --print-build-logs \
-          .#${{ matrix.ghc }}.${{ matrix.target }}
+          --print-build-logs
