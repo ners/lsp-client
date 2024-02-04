@@ -4,14 +4,9 @@
     extra-trusted-public-keys = "haskell:WskuxROW5pPy83rt3ZXnff09gvnu80yovdeKDw5Gi3o=";
   };
 
-
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
     nix-filter.url = "github:numtide/nix-filter";
-    unix-compat = {
-      url = "github:haskell-pkg-janitors/unix-compat";
-      flake = false;
-    };
   };
 
   outputs = inputs:
@@ -25,46 +20,56 @@
       );
       hsSrc = pname: root: inputs.nix-filter {
         inherit root;
-        include = [
-          "app"
-          "lib"
-          "src"
-          "test"
-          (inputs.nix-filter.lib.matchExt "cabal")
-          (inputs.nix-filter.lib.matchExt "md")
+        include = with inputs.nix-filter.lib; [
+          (matchExt "cabal")
+          (matchExt "hs")
+          (matchExt "md")
+          isDirectory
         ];
       };
+      pname = "lsp-client";
+      src = hsSrc pname ./.;
+      ghcs = [ "ghc92" "ghc94" "ghc96" "ghc98" ];
       overlay = final: prev: {
         haskell = prev.haskell // {
-          packageOverrides = lib.composeExtensions prev.haskell.packageOverrides (hfinal: hprev:
-            with prev.haskell.lib.compose;
-            {
-              "${pname}" = hfinal.callCabal2nix pname (hsSrc pname ./.) {
-                unix-compat = hfinal.callCabal2nix "unix-compat" inputs.unix-compat { };
-              };
-            }
-          );
+          packageOverrides = lib.composeExtensions
+            prev.haskell.packageOverrides
+            (hfinal: hprev: {
+              "${pname}" = hfinal.callCabal2nix pname src { };
+            });
         };
       };
-      pname = "lsp-client";
-      ghcs = [ "ghc92" "ghc94" "ghc96" ];
     in
     foreach inputs.nixpkgs.legacyPackages
       (system: pkgs':
         let
           pkgs = pkgs'.extend overlay;
-          hps = lib.filterAttrs (ghc: _: elem ghc ghcs) pkgs.haskell.packages;
+          hps =
+            lib.filterAttrs (ghc: _: elem ghc ghcs) pkgs.haskell.packages
+            // { default = pkgs.haskellPackages; };
+          allPackages =
+            pkgs.symlinkJoin {
+              inherit name;
+              paths = map (hp: hp.${pname}) (attrValues hps);
+            };
+          docs = pkgs.haskell.lib.documentationTarball hps.default.${pname};
+          sdist = hps.default.cabalSdist { name = "${pname}.tar.gz"; inherit src; };
+          inherit (hps.default.${pname}) name;
+          default = pkgs.runCommand name { } ''
+            mkdir $out
+            cd $out
+            mkdir docs sdist
+            ln -s ${allPackages} ${name}
+            ln -s ${docs}/*.tar.gz docs/
+            ln -s ${sdist} sdist/${name}.tar.gz
+          '';
         in
         {
           formatter.${system} = pkgs.nixpkgs-fmt;
-          legacyPackages.${system} = pkgs;
-          packages.${system}.default = pkgs.haskellPackages.${pname};
-          checks.${system}.${pname} = pkgs.buildEnv {
-            name = pname;
-            paths = map (hp: hp.${pname}) (attrValues hps);
-          };
+          legacyPackages.${system} = { inherit (pkgs) haskell haskellPackages; };
+          packages.${system} = { inherit default; };
           devShells.${system} =
-            foreach (hps // { default = pkgs.haskellPackages; }) (ghcName: hp: {
+            foreach hps (ghcName: hp: {
               ${ghcName} = hp.shellFor {
                 packages = ps: [ ps.${pname} ];
                 nativeBuildInputs = with hp; [
