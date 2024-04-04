@@ -16,9 +16,9 @@
       foreach = xs: f: with lib; foldr recursiveUpdate { } (
         if isList xs then map f xs
         else if isAttrs xs then mapAttrsToList f xs
-        else error "foreach: expected list or attrset but got ${typeOf xs}"
+        else throw "foreach: expected list or attrset but got ${typeOf xs}"
       );
-      hsSrc = pname: root: inputs.nix-filter {
+      hsSrc = root: inputs.nix-filter {
         inherit root;
         include = with inputs.nix-filter.lib; [
           (matchExt "cabal")
@@ -28,7 +28,7 @@
         ];
       };
       pname = "lsp-client";
-      src = hsSrc pname ./.;
+      src = hsSrc ./.;
       ghcs = [ "ghc92" "ghc94" "ghc96" "ghc98" ];
       overlay = final: prev: {
         haskell = prev.haskell // {

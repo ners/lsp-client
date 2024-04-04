@@ -1,5 +1,9 @@
 # Revision history for lsp-client
 
+## 0.3.0.0  -- 2024-04-04
+
+* Support lsp 2.4
+
 ## 0.2.0.0  -- 2023-11-01
 
 * Support lsp-types 2.0

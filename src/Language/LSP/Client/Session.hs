@@ -32,7 +32,7 @@ import Data.Row
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.IO qualified as Text
-import Data.Text.Utf16.Rope (Rope)
+import Data.Text.Utf16.Rope.Mixed (Rope)
 import Language.LSP.Client.Decoding
 import Language.LSP.Client.Exceptions (SessionException (UnexpectedResponseError))
 import Language.LSP.Protocol.Capabilities (fullCaps)

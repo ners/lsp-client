@@ -1,6 +1,6 @@
 cabal-version:       3.0
 name:                lsp-client
-version:             0.2.0.0
+version:             0.3.0.0
 synopsis:            Haskell library for Language Server Protocol clients
 homepage:            https://github.com/ners/lsp-client/blob/master/README.md
 license:             Apache-2.0
@@ -68,7 +68,7 @@ library
         extra,
         filepath,
         generic-lens,
-        lsp,
+        lsp >= 2.4,
         mtl,
         stm,
         text,
