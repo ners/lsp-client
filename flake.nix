@@ -4,10 +4,7 @@
     extra-trusted-public-keys = "haskell:WskuxROW5pPy83rt3ZXnff09gvnu80yovdeKDw5Gi3o=";
   };
 
-  inputs = {
-    nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
-    nix-filter.url = "github:numtide/nix-filter";
-  };
+  inputs.nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
 
   outputs = inputs:
     with builtins;
@@ -18,14 +15,9 @@
         else if isAttrs xs then mapAttrsToList f xs
         else throw "foreach: expected list or attrset but got ${typeOf xs}"
       );
-      hsSrc = root: inputs.nix-filter {
+      hsSrc = root: with lib.fileset; toSource {
         inherit root;
-        include = with inputs.nix-filter.lib; [
-          (matchExt "cabal")
-          (matchExt "hs")
-          (matchExt "md")
-          isDirectory
-        ];
+        fileset = fileFilter (file: any file.hasExt ["cabal" "hs" "md"] || file.type == "directory") ./.;
       };
       pname = "lsp-client";
       src = hsSrc ./.;
