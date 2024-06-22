@@ -4,7 +4,7 @@ import Control.Concurrent.STM
 import Prelude
 
 overTVar :: (a -> a) -> TVar a -> STM a
-overTVar f var = stateTVar var (\x -> (f x, f x))
+overTVar f var = stateTVar var $ \x -> let y = f x in (y, y)
 
 overTVarIO :: (a -> a) -> TVar a -> IO a
 overTVarIO = (atomically .) . overTVar

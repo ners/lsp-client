@@ -1,6 +1,6 @@
 cabal-version:       3.0
 name:                lsp-client
-version:             0.3.0.0
+version:             0.3.1.0
 synopsis:            Haskell library for Language Server Protocol clients
 homepage:            https://github.com/ners/lsp-client/blob/master/README.md
 license:             Apache-2.0
@@ -75,8 +75,9 @@ library
         text-rope,
         unordered-containers,
         unix-compat >= 0.7.1 && < 0.8,
-    exposed-modules:
+    other-modules:
         Control.Concurrent.STM.TVar.Extra,
+    exposed-modules:
         Language.LSP.Client,
         Language.LSP.Client.Decoding,
         Language.LSP.Client.Encoding,

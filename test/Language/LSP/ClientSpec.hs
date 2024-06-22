@@ -1,8 +1,7 @@
 module Language.LSP.ClientSpec where
 
 import Control.Arrow ((>>>))
-import Control.Concurrent.STM.TVar.Extra (writeTVarIO)
-import Control.Exception
+import Control.Exception (AssertionFailed (..))
 import Control.Lens ((^.))
 import Control.Monad
 import Control.Monad.Extra (whenMaybeM, whileJustM, whileM)
@@ -25,13 +24,12 @@ import Language.LSP.Client.Session qualified as LSP
 import Language.LSP.Protocol.Lens qualified as LSP
 import Language.LSP.Protocol.Message
 import Language.LSP.Protocol.Types
-import System.IO
 import System.Process (createPipe)
 import Test.Hspec hiding (shouldReturn)
 import Test.Hspec qualified as Hspec
 import Test.Hspec.QuickCheck
 import Test.QuickCheck
-import UnliftIO (MonadIO (..), MonadUnliftIO, fromEither, newTVarIO, race, readTVarIO)
+import UnliftIO
 import UnliftIO.Concurrent
 import Prelude hiding (log)
 
@@ -39,9 +37,9 @@ shouldReturn :: (MonadIO m, Show a, Eq a) => m a -> a -> m ()
 shouldReturn a expected = a >>= liftIO . flip Hspec.shouldBe expected
 
 withTimeout :: forall m a. (MonadUnliftIO m) => Int -> m a -> m a
-withTimeout delay a = fromEither =<< race timeout a
+withTimeout delay = fromEither <=< race t
   where
-    timeout = do
+    t = do
         threadDelay delay
         pure $ AssertionFailed "Timeout exceeded"
 
@@ -133,6 +131,9 @@ client serverInput serverOutput = do
 
 getAvailableContents :: Handle -> IO ByteString
 getAvailableContents h = whileJustM $ whenMaybeM (hReady h) (hGetSome h defaultChunkSize)
+
+writeTVarIO :: TVar a -> a -> IO ()
+writeTVarIO = (atomically .) . writeTVar
 
 spec :: Spec
 spec = do

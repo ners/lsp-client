@@ -1,6 +1,6 @@
+{-# LANGUAGE CPP #-}
 {-# OPTIONS_GHC -Wno-name-shadowing #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
-{-# LANGUAGE CPP #-}
 
 module Language.LSP.Client.Session where
 
@@ -39,22 +39,11 @@ import Language.LSP.Protocol.Capabilities (fullCaps)
 import Language.LSP.Protocol.Lens hiding (error, to)
 import Language.LSP.Protocol.Message
 import Language.LSP.Protocol.Types
-import System.PosixCompat.Process (getProcessID)
 import Language.LSP.VFS
-    ( VFS
-    , VfsLog
-    , VirtualFile (..)
-    , changeFromClientVFS
-    , changeFromServerVFS
-    , closeVFS
-    , lsp_version
-    , openVFS
-    , vfsMap
-    , virtualFileVersion
-    )
 import System.Directory (canonicalizePath)
 import System.FilePath (isAbsolute, (</>))
 import System.FilePath.Glob qualified as Glob
+import System.PosixCompat.Process (getProcessID)
 import Prelude hiding (id)
 import Prelude qualified
 
@@ -110,23 +99,16 @@ documentChangeUri (InR (InL x)) = x ^. uri
 documentChangeUri (InR (InR (InL x))) = x ^. oldUri
 documentChangeUri (InR (InR (InR x))) = x ^. uri
 
--- eitherOf :: APrism' s a -> (a -> b) -> (s -> b) -> s -> b
--- eitherOf p a b = either b a . matching p
---
--- anyOf :: [APrism' s a] -> (a -> b) -> b -> s -> b
--- anyOf [] _ b = const b
--- anyOf (p : prisms) a b = eitherOf p a $ anyOf prisms a b
-
 {- | Fires whenever the client receives a message from the server. Updates the session state as needed.
 Note that this does not provide any business logic beyond updating the session state; you most likely
 want to use `sendRequest` and `receiveNotification` to register callbacks for specific messages.
 -}
 handleServerMessage :: FromServerMessage -> Session ()
 handleServerMessage (FromServerMess SMethod_Progress req) =
-    when (anyOf folded ($ req ^. params . value) [is _workDoneProgressBegin, is _workDoneProgressEnd])
-        $ asks progressTokens
-        >>= liftIO
-        . flip modifyTVarIO (HashSet.insert $ req ^. params . token)
+    when (anyOf folded ($ req ^. params . value) [is _workDoneProgressBegin, is _workDoneProgressEnd]) $
+        asks progressTokens
+            >>= liftIO
+                . flip modifyTVarIO (HashSet.insert $ req ^. params . token)
 handleServerMessage (FromServerMess SMethod_ClientRegisterCapability req) =
     asks serverCapabilities >>= liftIO . flip modifyTVarIO (HashMap.union (HashMap.fromList newRegs))
   where
@@ -164,15 +146,13 @@ handleServerMessage (FromServerMess SMethod_WorkspaceApplyEdit r) = do
     let sortedVersions = sortBy (compare `on` (^. textDocument . version)) <$> groupedParams
         latestVersions = view textDocument . last <$> sortedVersions
 
-    forM_ latestVersions $ \(VersionedTextDocumentIdentifier uri v) ->
+    forM_ latestVersions $ \VersionedTextDocumentIdentifier{..} ->
         asks vfs
             >>= liftIO
-            . flip
-                modifyTVarIO
-                ( \vfs -> do
-                    let update (VirtualFile _ file_ver t) = VirtualFile v (file_ver + 1) t
-                     in vfs & vfsMap . ix (toNormalizedUri uri) %~ update
-                )
+                . flip
+                    modifyTVarIO
+                    ( vfsMap . ix (toNormalizedUri _uri) %~ ((lsp_version .~ _version) . (file_version +~ 1))
+                    )
     sendResponse
         r
         $ Right
@@ -183,7 +163,7 @@ handleServerMessage (FromServerMess SMethod_WorkspaceApplyEdit r) = do
                 }
   where
     logger :: LogAction (StateT VFS Identity) (WithSeverity VfsLog)
-    logger = LogAction $ \(WithSeverity msg sev) -> case sev of Error -> error $ show msg; _ -> pure ()
+    logger = LogAction $ \WithSeverity{..} -> case getSeverity of Error -> error $ show getMsg; _ -> pure ()
     checkIfNeedsOpened uri = do
         isOpen <- asks vfs >>= liftIO . readTVarIO <&> has (vfsMap . ix (toNormalizedUri uri))
 
@@ -204,7 +184,9 @@ handleServerMessage (FromServerMess SMethod_WorkspaceApplyEdit r) = do
 
     getParamsFromTextDocumentEdit :: TextDocumentEdit -> Maybe DidChangeTextDocumentParams
     getParamsFromTextDocumentEdit (TextDocumentEdit docId edits) = do
-        DidChangeTextDocumentParams <$> docId ^? _versionedTextDocumentIdentifier <*> pure (editToChangeEvent <$> edits)
+        _textDocument <- docId ^? _versionedTextDocumentIdentifier
+        let _contentChanges = editToChangeEvent <$> edits
+        pure DidChangeTextDocumentParams{..}
 
     editToChangeEvent :: TextEdit |? AnnotatedTextEdit -> TextDocumentContentChangeEvent
     editToChangeEvent (InR e) = TextDocumentContentChangeEvent $ InL $ #range .== (e ^. range) .+ #rangeLength .== Nothing .+ #text .== (e ^. newText)
@@ -215,22 +197,29 @@ handleServerMessage (FromServerMess SMethod_WorkspaceApplyEdit r) = do
     getParamsFromDocumentChange _ = Nothing
 
     bumpNewestVersion :: OptionalVersionedTextDocumentIdentifier -> Session OptionalVersionedTextDocumentIdentifier
-    bumpNewestVersion (OptionalVersionedTextDocumentIdentifier uri (InL _)) = do
-        nextVersion <- head <$> textDocumentVersions uri
-        pure $ OptionalVersionedTextDocumentIdentifier uri $ InL nextVersion._version
+    bumpNewestVersion OptionalVersionedTextDocumentIdentifier{_uri, _version = InL _} = do
+        VersionedTextDocumentIdentifier{_version} <- head <$> textDocumentVersions _uri
+        pure OptionalVersionedTextDocumentIdentifier{_version = InL _version, ..}
     bumpNewestVersion i = pure i
 
-    -- For a uri returns an infinite list of versions [n,n+1,n+2,...]
+    -- For a uri returns an infinite list of versions [n+1,n+2,...]
     -- where n is the current version
     textDocumentVersions :: Uri -> Session [VersionedTextDocumentIdentifier]
-    textDocumentVersions uri = do
-        vfs <- asks vfs >>= liftIO . readTVarIO
-        let curVer = fromMaybe 0 $ vfs ^? vfsMap . ix (toNormalizedUri uri) . lsp_version
-        pure $ VersionedTextDocumentIdentifier uri <$> [curVer + 1 ..]
+    textDocumentVersions _uri = do
+        tail . iterate (version +~ 1) <$> getVersionedDoc TextDocumentIdentifier{_uri}
 
     textDocumentEdits uri edits = do
-        vers <- textDocumentVersions uri
-        pure $ zipWith (\v e -> TextDocumentEdit (review _versionedTextDocumentIdentifier v) [InL e]) vers edits
+        versions <- textDocumentVersions uri
+        pure $
+            zipWith
+                ( \v e ->
+                    TextDocumentEdit
+                        { _edits = [InL e]
+                        , _textDocument = review _versionedTextDocumentIdentifier v
+                        }
+                )
+                versions
+                edits
 
     getChangeParams uri edits = do
         edits <- textDocumentEdits uri (reverse edits)
@@ -238,8 +227,10 @@ handleServerMessage (FromServerMess SMethod_WorkspaceApplyEdit r) = do
 
     mergeParams :: [DidChangeTextDocumentParams] -> DidChangeTextDocumentParams
     mergeParams params =
-        let events = concat $ toList $ toList . (^. contentChanges) <$> params
-         in DidChangeTextDocumentParams (head params ^. textDocument) events
+        DidChangeTextDocumentParams
+            { _contentChanges = concat . toList $ toList . (^. contentChanges) <$> params
+            , _textDocument = head params ^. textDocument
+            }
 handleServerMessage (FromServerMess SMethod_WindowWorkDoneProgressCreate req) = sendResponse req $ Right Null
 handleServerMessage _ = pure ()
 
@@ -253,11 +244,11 @@ sendRequest
     -> MessageParams m
     -> (TResponseMessage m -> IO ())
     -> Session (LspId m)
-sendRequest requestMethod params requestCallback = do
-    reqId <- asks lastRequestId >>= liftIO . overTVarIO (+ 1) <&> IdInt
-    asks pendingRequests >>= liftIO . flip modifyTVarIO (updateRequestMap reqId RequestCallback{..})
-    sendMessage $ fromClientReq $ TRequestMessage "2.0" reqId requestMethod params
-    pure reqId
+sendRequest requestMethod _params requestCallback = do
+    _id <- asks lastRequestId >>= liftIO . overTVarIO (+ 1) <&> IdInt
+    asks pendingRequests >>= liftIO . flip modifyTVarIO (updateRequestMap _id RequestCallback{..})
+    sendMessage $ fromClientReq TRequestMessage{_jsonrpc = "2.0", _method = requestMethod, ..}
+    pure _id
 
 {- | Send a response to the server. This is used internally to acknowledge server requests.
 Users of this library cannot register callbacks to server requests, so this function is probably of no use to them.
@@ -267,8 +258,8 @@ sendResponse
      . TRequestMessage m
     -> Either ResponseError (MessageResult m)
     -> Session ()
-sendResponse req res = do
-    sendMessage $ FromClientRsp req._method $ TResponseMessage req._jsonrpc (Just req._id) res
+sendResponse TRequestMessage{..} _result =
+    sendMessage $ FromClientRsp _method TResponseMessage{_id = Just _id, ..}
 
 -- | Sends a request to the server and synchronously waits for its response.
 request
@@ -302,9 +293,9 @@ sendNotification m params = do
     let n = TNotificationMessage "2.0" m params
     vfs <- asks vfs
     case m of
-        SMethod_TextDocumentDidOpen -> liftIO $ modifyTVarIO vfs (execState $ openVFS mempty n)
-        SMethod_TextDocumentDidClose -> liftIO $ modifyTVarIO vfs (execState $ closeVFS mempty n)
-        SMethod_TextDocumentDidChange -> liftIO $ modifyTVarIO vfs (execState $ changeFromClientVFS mempty n)
+        SMethod_TextDocumentDidOpen -> liftIO . modifyTVarIO vfs . execState $ openVFS mempty n
+        SMethod_TextDocumentDidClose -> liftIO . modifyTVarIO vfs . execState $ closeVFS mempty n
+        SMethod_TextDocumentDidChange -> liftIO . modifyTVarIO vfs . execState $ changeFromClientVFS mempty n
         _ -> pure ()
     sendMessage $ fromClientNot n
 
@@ -320,10 +311,10 @@ receiveNotification
 receiveNotification method notificationCallback =
     asks notificationHandlers
         >>= liftIO
-        . flip
-            modifyTVarIO
-            ( appendNotificationCallback method NotificationCallback{..}
-            )
+            . flip
+                modifyTVarIO
+                ( appendNotificationCallback method NotificationCallback{..}
+                )
 
 {- | Clears the registered callback for the given notification method, if any.
 If multiple callbacks have been registered, this clears /all/ of them.
@@ -335,10 +326,10 @@ clearNotificationCallback
 clearNotificationCallback method =
     asks notificationHandlers
         >>= liftIO
-        . flip
-            modifyTVarIO
-            ( removeNotificationCallback method
-            )
+            . flip
+                modifyTVarIO
+                ( removeNotificationCallback method
+                )
 
 -- | Queues a message to be sent to the server at the client's earliest convenience.
 sendMessage :: FromClientMessage -> Session ()
@@ -399,8 +390,8 @@ createDoc file language contents = do
         regs :: [TRegistration 'Method_WorkspaceDidChangeWatchedFiles]
         regs = concatMap pred $ HashMap.elems serverCaps
         watchHits :: FileSystemWatcher -> Bool
-        watchHits (FileSystemWatcher (GlobPattern (InL (Pattern pattern))) kind) =
-            fileMatches (Text.unpack pattern) && maybe True containsCreate kind
+        watchHits FileSystemWatcher{_globPattern = GlobPattern (InL (Pattern pattern)), _kind} =
+            fileMatches (Text.unpack pattern) && maybe True containsCreate _kind
         watchHits _ = False
 
         fileMatches :: String -> Bool
@@ -417,13 +408,20 @@ createDoc file language contents = do
                     . _Just
                     . dynamicRegistration
                     . _Just
-                    == Just True
+                == Just True
         shouldSend = clientCapsSupports && foldl' (\acc r -> acc || regHits r) False regs
 
-    when shouldSend
-        $ sendNotification SMethod_WorkspaceDidChangeWatchedFiles
-        $ DidChangeWatchedFilesParams
-            [FileEvent (filePathToUri $ rootDir </> file) FileChangeType_Created]
+    when shouldSend $
+        sendNotification
+            SMethod_WorkspaceDidChangeWatchedFiles
+            DidChangeWatchedFilesParams
+                { _changes =
+                    [ FileEvent
+                        { _type_ = FileChangeType_Created
+                        , _uri = filePathToUri $ rootDir </> file
+                        }
+                    ]
+                }
     openDoc' file language contents
 
 {- | Opens a text document that /exists on disk/, and sends a
@@ -432,8 +430,7 @@ createDoc file language contents = do
 openDoc :: FilePath -> Text -> Session TextDocumentIdentifier
 openDoc file language = do
     rootDir <- asks rootDir
-    let fp = rootDir </> file
-    contents <- liftIO $ Text.readFile fp
+    contents <- liftIO . Text.readFile $ rootDir </> file
     openDoc' file language contents
 
 {- | This is a variant of `openDoc` that takes the file content as an argument.
@@ -442,41 +439,64 @@ openDoc file language = do
 openDoc' :: FilePath -> Text -> Text -> Session TextDocumentIdentifier
 openDoc' file language contents = do
     rootDir <- asks rootDir
-    let fp = rootDir </> file
-        uri = filePathToUri fp
-        item = TextDocumentItem uri language 0 contents
-    sendNotification SMethod_TextDocumentDidOpen (DidOpenTextDocumentParams item)
-    pure $ TextDocumentIdentifier uri
+    let _uri = filePathToUri $ rootDir </> file
+    sendNotification
+        SMethod_TextDocumentDidOpen
+        DidOpenTextDocumentParams
+            { _textDocument =
+                TextDocumentItem
+                    { _text = contents
+                    , _languageId = language
+                    , _version = 0
+                    , _uri
+                    }
+            }
+    pure TextDocumentIdentifier{..}
 
 -- | Closes a text document and sends a @textDocument/didClose@ notification to the server.
 closeDoc :: TextDocumentIdentifier -> Session ()
-closeDoc docId = do
-    let params = DidCloseTextDocumentParams (TextDocumentIdentifier (docId ^. uri))
-    sendNotification SMethod_TextDocumentDidClose params
+closeDoc docId =
+    sendNotification
+        SMethod_TextDocumentDidClose
+        DidCloseTextDocumentParams
+            { _textDocument =
+                TextDocumentIdentifier
+                    { _uri = docId ^. uri
+                    }
+            }
 
 -- | Changes a text document and sends a @textDocument/didChange@ notification to the server.
 changeDoc :: TextDocumentIdentifier -> [TextDocumentContentChangeEvent] -> Session ()
-changeDoc docId changes = do
-    verDoc <- getVersionedDoc docId
-    let params = DidChangeTextDocumentParams (verDoc & version +~ 1) changes
-    sendNotification SMethod_TextDocumentDidChange params
+changeDoc docId _contentChanges = do
+    _textDocument <- getVersionedDoc docId <&> version +~ 1
+    sendNotification SMethod_TextDocumentDidChange DidChangeTextDocumentParams{..}
 
 -- | Gets the Uri for the file relative to the session's root directory.
 getDocUri :: FilePath -> Session Uri
 getDocUri file = do
     rootDir <- asks rootDir
-    let fp = rootDir </> file
-    return $ filePathToUri fp
+    pure . filePathToUri $ rootDir </> file
 
 -- | The current text contents of a document.
 documentContents :: TextDocumentIdentifier -> Session (Maybe Rope)
-documentContents (TextDocumentIdentifier uri) = do
+documentContents TextDocumentIdentifier{_uri} = do
     vfs <- asks vfs >>= liftIO . readTVarIO
-    pure $ vfs ^? vfsMap . ix (toNormalizedUri uri) . to _file_text
+    pure $ vfs ^? vfsMap . ix (toNormalizedUri _uri) . to _file_text
 
 -- | Adds the current version to the document, as tracked by the session.
 getVersionedDoc :: TextDocumentIdentifier -> Session VersionedTextDocumentIdentifier
-getVersionedDoc (TextDocumentIdentifier uri) = do
+getVersionedDoc TextDocumentIdentifier{_uri} = do
     vfs <- asks vfs >>= liftIO . readTVarIO
-    let ver = fromMaybe 0 $ vfs ^? vfsMap . ix (toNormalizedUri uri) . to virtualFileVersion
-    pure $ VersionedTextDocumentIdentifier uri ver
+    let _version = fromMaybe 0 $ vfs ^? vfsMap . ix (toNormalizedUri _uri) . to virtualFileVersion
+    pure VersionedTextDocumentIdentifier{..}
+
+-- | Get all the versioned documents tracked by the session.
+getAllVersionedDocs :: Session [VersionedTextDocumentIdentifier]
+getAllVersionedDocs = do
+    vfs <- asks vfs >>= liftIO . readTVarIO
+    pure $
+        Map.toList (vfs ^. vfsMap) <&> \(nuri, vf) ->
+            VersionedTextDocumentIdentifier
+                { _uri = fromNormalizedUri nuri
+                , _version = virtualFileVersion vf
+                }

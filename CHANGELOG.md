@@ -1,5 +1,9 @@
 # Revision history for lsp-client
 
+## 0.3.1.0  -- 2024-06-24
+
+* Add Session.getAllVersionedDocs
+
 ## 0.3.0.0  -- 2024-04-04
 
 * Support lsp 2.4
