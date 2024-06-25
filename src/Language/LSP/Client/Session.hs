@@ -70,8 +70,8 @@ data SessionState = SessionState
     -- ^ The root of the project as sent to the server. Document URIs are relative to it. Not a `TVar` because it does not change during the session.
     }
 
-defaultSessionState :: VFS -> IO SessionState
-defaultSessionState vfs' = do
+defaultSessionState :: (MonadIO io) => VFS -> io SessionState
+defaultSessionState vfs' = liftIO $ do
     initialized <- newEmptyTMVarIO
     pendingRequests <- newTVarIO emptyRequestMap
     notificationHandlers <- newTVarIO emptyNotificationMap
@@ -91,7 +91,9 @@ defaultSessionState vfs' = do
 It is essentially an STM-backed `StateT`: despite it being `ReaderT`, it can still
 mutate `TVar` values.
 -}
-type Session = ReaderT SessionState IO
+type SessionT = ReaderT SessionState
+
+type Session = SessionT IO
 
 documentChangeUri :: DocumentChange -> Uri
 documentChangeUri (InL x) = x ^. textDocument . uri
@@ -103,7 +105,7 @@ documentChangeUri (InR (InR (InR x))) = x ^. uri
 Note that this does not provide any business logic beyond updating the session state; you most likely
 want to use `sendRequest` and `receiveNotification` to register callbacks for specific messages.
 -}
-handleServerMessage :: FromServerMessage -> Session ()
+handleServerMessage :: forall io. (MonadIO io) => FromServerMessage -> SessionT io ()
 handleServerMessage (FromServerMess SMethod_Progress req) =
     when (anyOf folded ($ req ^. params . value) [is _workDoneProgressBegin, is _workDoneProgressEnd]) $
         asks progressTokens
@@ -164,6 +166,8 @@ handleServerMessage (FromServerMess SMethod_WorkspaceApplyEdit r) = do
   where
     logger :: LogAction (StateT VFS Identity) (WithSeverity VfsLog)
     logger = LogAction $ \WithSeverity{..} -> case getSeverity of Error -> error $ show getMsg; _ -> pure ()
+
+    checkIfNeedsOpened :: Uri -> SessionT io ()
     checkIfNeedsOpened uri = do
         isOpen <- asks vfs >>= liftIO . readTVarIO <&> has (vfsMap . ix (toNormalizedUri uri))
 
@@ -196,7 +200,7 @@ handleServerMessage (FromServerMess SMethod_WorkspaceApplyEdit r) = do
     getParamsFromDocumentChange (InL textDocumentEdit) = getParamsFromTextDocumentEdit textDocumentEdit
     getParamsFromDocumentChange _ = Nothing
 
-    bumpNewestVersion :: OptionalVersionedTextDocumentIdentifier -> Session OptionalVersionedTextDocumentIdentifier
+    bumpNewestVersion :: OptionalVersionedTextDocumentIdentifier -> SessionT io OptionalVersionedTextDocumentIdentifier
     bumpNewestVersion OptionalVersionedTextDocumentIdentifier{_uri, _version = InL _} = do
         VersionedTextDocumentIdentifier{_version} <- head <$> textDocumentVersions _uri
         pure OptionalVersionedTextDocumentIdentifier{_version = InL _version, ..}
@@ -204,10 +208,11 @@ handleServerMessage (FromServerMess SMethod_WorkspaceApplyEdit r) = do
 
     -- For a uri returns an infinite list of versions [n+1,n+2,...]
     -- where n is the current version
-    textDocumentVersions :: Uri -> Session [VersionedTextDocumentIdentifier]
+    textDocumentVersions :: Uri -> SessionT io [VersionedTextDocumentIdentifier]
     textDocumentVersions _uri = do
         tail . iterate (version +~ 1) <$> getVersionedDoc TextDocumentIdentifier{_uri}
 
+    textDocumentEdits :: Uri -> [TextEdit] -> SessionT io [TextDocumentEdit]
     textDocumentEdits uri edits = do
         versions <- textDocumentVersions uri
         pure $
@@ -238,12 +243,12 @@ handleServerMessage _ = pure ()
 Multiple requests can be waiting at the same time.
 -}
 sendRequest
-    :: forall (m :: Method 'ClientToServer 'Request)
-     . (TMessage m ~ TRequestMessage m)
+    :: forall (m :: Method 'ClientToServer 'Request) io
+     . (TMessage m ~ TRequestMessage m, MonadIO io)
     => SMethod m
     -> MessageParams m
     -> (TResponseMessage m -> IO ())
-    -> Session (LspId m)
+    -> SessionT io (LspId m)
 sendRequest requestMethod _params requestCallback = do
     _id <- asks lastRequestId >>= liftIO . overTVarIO (+ 1) <&> IdInt
     asks pendingRequests >>= liftIO . flip modifyTVarIO (updateRequestMap _id RequestCallback{..})
@@ -254,20 +259,21 @@ sendRequest requestMethod _params requestCallback = do
 Users of this library cannot register callbacks to server requests, so this function is probably of no use to them.
 -}
 sendResponse
-    :: forall (m :: Method 'ServerToClient 'Request)
-     . TRequestMessage m
+    :: forall (m :: Method 'ServerToClient 'Request) io
+     . (MonadIO io)
+    => TRequestMessage m
     -> Either ResponseError (MessageResult m)
-    -> Session ()
+    -> SessionT io ()
 sendResponse TRequestMessage{..} _result =
     sendMessage $ FromClientRsp _method TResponseMessage{_id = Just _id, ..}
 
 -- | Sends a request to the server and synchronously waits for its response.
 request
-    :: forall (m :: Method 'ClientToServer 'Request)
-     . (TMessage m ~ TRequestMessage m)
+    :: forall (m :: Method 'ClientToServer 'Request) io
+     . (TMessage m ~ TRequestMessage m, MonadIO io)
     => SMethod m
     -> MessageParams m
-    -> Session (TResponseMessage m)
+    -> SessionT io (TResponseMessage m)
 request method params = do
     done <- liftIO newEmptyMVar
     void $ sendRequest method params $ putMVar done
@@ -284,11 +290,11 @@ getResponseResult response = either err Prelude.id $ response ^. result
 
 -- | Sends a notification to the server. Updates the VFS if the notification is a document update.
 sendNotification
-    :: forall (m :: Method 'ClientToServer 'Notification)
-     . (TMessage m ~ TNotificationMessage m)
+    :: forall (m :: Method 'ClientToServer 'Notification) io
+     . (TMessage m ~ TNotificationMessage m, MonadIO io)
     => SMethod m
     -> MessageParams m
-    -> Session ()
+    -> SessionT io ()
 sendNotification m params = do
     let n = TNotificationMessage "2.0" m params
     vfs <- asks vfs
@@ -303,11 +309,11 @@ sendNotification m params = do
 If multiple callbacks are registered for the same notification method, they will all be called.
 -}
 receiveNotification
-    :: forall (m :: Method 'ServerToClient 'Notification)
-     . (TMessage m ~ TNotificationMessage m)
+    :: forall (m :: Method 'ServerToClient 'Notification) io
+     . (TMessage m ~ TNotificationMessage m, MonadIO io)
     => SMethod m
     -> (TMessage m -> IO ())
-    -> Session ()
+    -> SessionT io ()
 receiveNotification method notificationCallback =
     asks notificationHandlers
         >>= liftIO
@@ -320,9 +326,10 @@ receiveNotification method notificationCallback =
 If multiple callbacks have been registered, this clears /all/ of them.
 -}
 clearNotificationCallback
-    :: forall (m :: Method 'ServerToClient 'Notification)
-     . SMethod m
-    -> Session ()
+    :: forall (m :: Method 'ServerToClient 'Notification) io
+     . (MonadIO io)
+    => SMethod m
+    -> SessionT io ()
 clearNotificationCallback method =
     asks notificationHandlers
         >>= liftIO
@@ -332,7 +339,7 @@ clearNotificationCallback method =
                 )
 
 -- | Queues a message to be sent to the server at the client's earliest convenience.
-sendMessage :: FromClientMessage -> Session ()
+sendMessage :: (MonadIO io) => FromClientMessage -> SessionT io ()
 sendMessage msg = asks outgoing >>= liftIO . atomically . (`writeTQueue` msg)
 
 lspClientInfo :: Rec ("name" .== Text .+ "version" .== Maybe Text)
@@ -341,7 +348,7 @@ lspClientInfo = #name .== "lsp-client" .+ #version .== Just CURRENT_PACKAGE_VERS
 {- | Performs the initialisation handshake and synchronously waits for its completion.
 When the function completes, the session is initialised.
 -}
-initialize :: Session ()
+initialize :: (MonadIO io) => SessionT io ()
 initialize = do
     pid <- liftIO getProcessID
     response <-
@@ -371,13 +378,14 @@ initialize = do
  the server that one does exist.
 -}
 createDoc
-    :: FilePath
+    :: (MonadIO io)
+    => FilePath
     -- ^ The path to the document to open, __relative to the root directory__.
     -> Text
     -- ^ The text document's language identifier, e.g. @"haskell"@.
     -> Text
     -- ^ The content of the text document to create.
-    -> Session TextDocumentIdentifier
+    -> SessionT io TextDocumentIdentifier
     -- ^ The identifier of the document just created.
 createDoc file language contents = do
     serverCaps <- asks serverCapabilities >>= liftIO . readTVarIO
@@ -427,7 +435,7 @@ createDoc file language contents = do
 {- | Opens a text document that /exists on disk/, and sends a
  @textDocument/didOpen@ notification to the server.
 -}
-openDoc :: FilePath -> Text -> Session TextDocumentIdentifier
+openDoc :: (MonadIO io) => FilePath -> Text -> SessionT io TextDocumentIdentifier
 openDoc file language = do
     rootDir <- asks rootDir
     contents <- liftIO . Text.readFile $ rootDir </> file
@@ -436,7 +444,7 @@ openDoc file language = do
 {- | This is a variant of `openDoc` that takes the file content as an argument.
  Use this is the file exists /outside/ of the current workspace.
 -}
-openDoc' :: FilePath -> Text -> Text -> Session TextDocumentIdentifier
+openDoc' :: (MonadIO io) => FilePath -> Text -> Text -> SessionT io TextDocumentIdentifier
 openDoc' file language contents = do
     rootDir <- asks rootDir
     let _uri = filePathToUri $ rootDir </> file
@@ -454,7 +462,7 @@ openDoc' file language contents = do
     pure TextDocumentIdentifier{..}
 
 -- | Closes a text document and sends a @textDocument/didClose@ notification to the server.
-closeDoc :: TextDocumentIdentifier -> Session ()
+closeDoc :: (MonadIO io) => TextDocumentIdentifier -> SessionT io ()
 closeDoc docId =
     sendNotification
         SMethod_TextDocumentDidClose
@@ -466,32 +474,32 @@ closeDoc docId =
             }
 
 -- | Changes a text document and sends a @textDocument/didChange@ notification to the server.
-changeDoc :: TextDocumentIdentifier -> [TextDocumentContentChangeEvent] -> Session ()
+changeDoc :: (MonadIO io) => TextDocumentIdentifier -> [TextDocumentContentChangeEvent] -> SessionT io ()
 changeDoc docId _contentChanges = do
     _textDocument <- getVersionedDoc docId <&> version +~ 1
     sendNotification SMethod_TextDocumentDidChange DidChangeTextDocumentParams{..}
 
 -- | Gets the Uri for the file relative to the session's root directory.
-getDocUri :: FilePath -> Session Uri
+getDocUri :: (MonadIO io) => FilePath -> SessionT io Uri
 getDocUri file = do
     rootDir <- asks rootDir
     pure . filePathToUri $ rootDir </> file
 
 -- | The current text contents of a document.
-documentContents :: TextDocumentIdentifier -> Session (Maybe Rope)
+documentContents :: (MonadIO io) => TextDocumentIdentifier -> SessionT io (Maybe Rope)
 documentContents TextDocumentIdentifier{_uri} = do
     vfs <- asks vfs >>= liftIO . readTVarIO
     pure $ vfs ^? vfsMap . ix (toNormalizedUri _uri) . to _file_text
 
 -- | Adds the current version to the document, as tracked by the session.
-getVersionedDoc :: TextDocumentIdentifier -> Session VersionedTextDocumentIdentifier
+getVersionedDoc :: (MonadIO io) => TextDocumentIdentifier -> SessionT io VersionedTextDocumentIdentifier
 getVersionedDoc TextDocumentIdentifier{_uri} = do
     vfs <- asks vfs >>= liftIO . readTVarIO
     let _version = fromMaybe 0 $ vfs ^? vfsMap . ix (toNormalizedUri _uri) . to virtualFileVersion
     pure VersionedTextDocumentIdentifier{..}
 
 -- | Get all the versioned documents tracked by the session.
-getAllVersionedDocs :: Session [VersionedTextDocumentIdentifier]
+getAllVersionedDocs :: (MonadIO io) => SessionT io [VersionedTextDocumentIdentifier]
 getAllVersionedDocs = do
     vfs <- asks vfs >>= liftIO . readTVarIO
     pure $

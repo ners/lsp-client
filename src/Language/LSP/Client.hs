@@ -5,7 +5,6 @@ module Language.LSP.Client where
 
 import Control.Concurrent.STM
 import Control.Monad (forever)
-import Control.Monad.IO.Class (MonadIO (liftIO))
 import Control.Monad.Reader (asks, runReaderT)
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.Dependent.Map qualified as DMap
@@ -17,20 +16,21 @@ import Language.LSP.Client.Session
 import Language.LSP.Protocol.Message qualified as LSP
 import Language.LSP.VFS (emptyVFS)
 import System.IO (Handle)
-import UnliftIO (concurrently_, race)
+import UnliftIO (MonadUnliftIO, concurrently_, liftIO, race)
 import Prelude
 
 {- | Starts a new session, using the specified handles to communicate with the
 server.
 -}
 runSessionWithHandles
-    :: Handle
+    :: (MonadUnliftIO io)
+    => Handle
     -- ^ The input handle: messages sent from the server to the client will be read from here
     -> Handle
     -- ^ The output handle: messages sent by the client will be written here
-    -> Session a
+    -> SessionT io a
     -- ^ Session actions
-    -> IO a
+    -> io a
 runSessionWithHandles input output action = do
     initialState <- defaultSessionState emptyVFS
     flip runReaderT initialState $ do
