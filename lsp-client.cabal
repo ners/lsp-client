@@ -50,8 +50,8 @@ common common
         bytestring >= 0.9 && < 0.13,
         lens >= 5 && < 6,
         lsp-types >= 2 && < 3,
-        unliftio >= 0.2 && < 0.3,
         row-types,
+        unliftio >= 0.2 && < 0.3,
 
 library
     import:           common
@@ -73,8 +73,9 @@ library
         stm,
         text,
         text-rope,
-        unordered-containers,
+        transformers,
         unix-compat >= 0.7.1 && < 0.8,
+        unordered-containers,
     other-modules:
         Control.Concurrent.STM.TVar.Extra,
     exposed-modules:
