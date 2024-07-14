@@ -1,9 +1,10 @@
 # Revision history for lsp-client
 
-## 0.3.1.0  -- 2024-06-24
+## 0.4.0.0  -- 2024-06-24
 
 * Introduce SessionT and MonadSession
 * Lift all functions to MonadSession
+* Session.initialize now takes LSP initialization options
 * Add Session.getAllVersionedDocs
 
 ## 0.3.0.0  -- 2024-04-04

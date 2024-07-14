@@ -17,6 +17,7 @@ import Control.Monad.IO.Class (MonadIO (liftIO))
 import Control.Monad.Reader (ReaderT (runReaderT), ask, asks)
 import Control.Monad.State (StateT, execState)
 import Control.Monad.Trans.Class (MonadTrans, lift)
+import Data.Aeson (Value)
 import Data.Default (def)
 import Data.Foldable (foldl', foldr', forM_, toList)
 import Data.Function (on)
@@ -361,8 +362,8 @@ lspClientInfo = #name .== "lsp-client" .+ #version .== Just CURRENT_PACKAGE_VERS
 {- | Performs the initialisation handshake and synchronously waits for its completion.
 When the function completes, the session is initialised.
 -}
-initialize :: (MonadSession m) => m ()
-initialize = liftSession $ do
+initialize :: (MonadSession m) => Maybe Value -> m ()
+initialize options = liftSession $ do
     pid <- liftIO getProcessID
     response <-
         request
@@ -374,7 +375,7 @@ initialize = liftSession $ do
                 , _locale = Nothing
                 , _rootPath = Nothing
                 , _rootUri = InR Null
-                , _initializationOptions = Nothing
+                , _initializationOptions = options
                 , _capabilities = fullCaps
                 , _trace = Just TraceValues_Off
                 , _workspaceFolders = Nothing
