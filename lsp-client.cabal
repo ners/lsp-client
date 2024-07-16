@@ -49,8 +49,7 @@ common common
         base >= 4.16 && < 5,
         bytestring >= 0.9 && < 0.13,
         lens >= 5 && < 6,
-        lsp-types >= 2 && < 3,
-        row-types,
+        lsp-types ^>= 2.3,
         unliftio >= 0.2 && < 0.3,
 
 library
@@ -68,7 +67,7 @@ library
         extra,
         filepath,
         generic-lens,
-        lsp >= 2.4,
+        lsp ^>= 2.7,
         mtl,
         stm,
         text,

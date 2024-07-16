@@ -8,9 +8,10 @@ import Data.Algorithm.DiffOutput (ppDiff)
 import Data.ByteString.Lazy.Char8 qualified as LazyByteString
 import Data.List (nub)
 import Language.LSP.Protocol.Message
-    ( FromServerMessage
-    , ResponseError
-    , SomeLspId
+    ( ErrorData
+    , FromServerMessage
+    , LspId
+    , TResponseError
     )
 import Prelude
 
@@ -22,11 +23,10 @@ data SessionException
     | ReplayOutOfOrder FromServerMessage [FromServerMessage]
     | UnexpectedDiagnostics
     | IncorrectApplyEditRequest String
-    | UnexpectedResponseError SomeLspId ResponseError
+    | forall m. (Show (ErrorData m)) => UnexpectedResponseError (LspId m) (TResponseError m)
     | UnexpectedServerTermination
     | IllegalInitSequenceMessage FromServerMessage
     | MessageSendError Value IOError
-    deriving stock (Eq)
 
 instance Exception SessionException
 

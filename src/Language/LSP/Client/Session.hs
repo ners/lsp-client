@@ -31,15 +31,14 @@ import Data.List (sortBy)
 import Data.List.Extra (groupOn)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromJust, fromMaybe, mapMaybe)
-import Data.Row
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.IO qualified as Text
 import Data.Text.Utf16.Rope.Mixed (Rope)
 import Language.LSP.Client.Decoding
 import Language.LSP.Client.Exceptions (SessionException (UnexpectedResponseError))
-import Language.LSP.Protocol.Capabilities (fullCaps)
-import Language.LSP.Protocol.Lens hiding (error, to)
+import Language.LSP.Protocol.Capabilities (fullLatestClientCaps)
+import Language.LSP.Protocol.Lens qualified as LSP
 import Language.LSP.Protocol.Message
 import Language.LSP.Protocol.Types
 import Language.LSP.VFS
@@ -108,10 +107,10 @@ instance {-# OVERLAPPABLE #-} (MonadTrans t, MonadSession m, Monad (t m)) => Mon
     liftSession = lift . liftSession
 
 documentChangeUri :: DocumentChange -> Uri
-documentChangeUri (InL x) = x ^. textDocument . uri
-documentChangeUri (InR (InL x)) = x ^. uri
-documentChangeUri (InR (InR (InL x))) = x ^. oldUri
-documentChangeUri (InR (InR (InR x))) = x ^. uri
+documentChangeUri (InL x) = x ^. LSP.textDocument . LSP.uri
+documentChangeUri (InR (InL x)) = x ^. LSP.uri
+documentChangeUri (InR (InR (InL x))) = x ^. LSP.oldUri
+documentChangeUri (InR (InR (InR x))) = x ^. LSP.uri
 
 {- | Fires whenever the client receives a message from the server. Updates the session state as needed.
 Note that this does not provide any business logic beyond updating the session state; you most likely
@@ -119,30 +118,30 @@ want to use `sendRequest` and `receiveNotification` to register callbacks for sp
 -}
 handleServerMessage :: (MonadSession m) => FromServerMessage -> m ()
 handleServerMessage (FromServerMess SMethod_Progress req) =
-    liftSession . when (anyOf folded ($ req ^. params . value) [is _workDoneProgressBegin, is _workDoneProgressEnd]) $
+    liftSession . when (anyOf folded ($ req ^. LSP.params . LSP.value) [is _workDoneProgressBegin, is _workDoneProgressEnd]) $
         asks progressTokens
             >>= liftIO
-                . flip modifyTVarIO (HashSet.insert $ req ^. params . token)
+                . flip modifyTVarIO (HashSet.insert $ req ^. LSP.params . LSP.token)
 handleServerMessage (FromServerMess SMethod_ClientRegisterCapability req) =
     liftSession $ asks serverCapabilities >>= liftIO . flip modifyTVarIO (HashMap.union (HashMap.fromList newRegs))
   where
-    regs = req ^.. params . registrations . traversed . to toSomeRegistration . _Just
-    newRegs = (\sr@(SomeRegistration r) -> (r ^. id, sr)) <$> regs
+    regs = req ^.. LSP.params . LSP.registrations . traversed . to toSomeRegistration . _Just
+    newRegs = (\sr@(SomeRegistration r) -> (r ^. LSP.id, sr)) <$> regs
 handleServerMessage (FromServerMess SMethod_ClientUnregisterCapability req) =
     liftSession $ asks serverCapabilities >>= liftIO . flip modifyTVarIO (flip (foldr' HashMap.delete) unRegs)
   where
-    unRegs = (^. id) <$> req ^. params . unregisterations
+    unRegs = (^. LSP.id) <$> req ^. LSP.params . LSP.unregisterations
 handleServerMessage (FromServerMess SMethod_WorkspaceApplyEdit r) = liftSession $ do
     -- First, prefer the versioned documentChanges field
-    allChangeParams <- case r ^. params . edit . documentChanges of
+    allChangeParams <- case r ^. LSP.params . LSP.edit . LSP.documentChanges of
         Just cs -> do
             mapM_ (checkIfNeedsOpened . documentChangeUri) cs
             -- replace the user provided version numbers with the VFS ones + 1
             -- (technically we should check that the user versions match the VFS ones)
-            cs' <- traverseOf (traverse . _L . textDocument) bumpNewestVersion cs
+            cs' <- traverseOf (traverse . _L . LSP.textDocument) bumpNewestVersion cs
             return $ mapMaybe getParamsFromDocumentChange cs'
         -- Then fall back to the changes field
-        Nothing -> case r ^. params . edit . changes of
+        Nothing -> case r ^. LSP.params . LSP.edit . LSP.changes of
             Just cs -> do
                 mapM_ checkIfNeedsOpened (Map.keys cs)
                 concat <$> mapM (uncurry getChangeParams) (Map.toList cs)
@@ -151,14 +150,14 @@ handleServerMessage (FromServerMess SMethod_WorkspaceApplyEdit r) = liftSession 
 
     asks vfs >>= liftIO . flip modifyTVarIO (execState $ changeFromServerVFS logger r)
 
-    let groupedParams = groupOn (view textDocument) allChangeParams
+    let groupedParams = groupOn (view LSP.textDocument) allChangeParams
         mergedParams = mergeParams <$> groupedParams
 
     forM_ mergedParams $ sendNotification SMethod_TextDocumentDidChange
 
     -- Update VFS to new document versions
-    let sortedVersions = sortBy (compare `on` (^. textDocument . version)) <$> groupedParams
-        latestVersions = view textDocument . last <$> sortedVersions
+    let sortedVersions = sortBy (compare `on` (^. LSP.textDocument . LSP.version)) <$> groupedParams
+        latestVersions = view LSP.textDocument . last <$> sortedVersions
 
     forM_ latestVersions $ \VersionedTextDocumentIdentifier{..} ->
         asks vfs
@@ -205,8 +204,8 @@ handleServerMessage (FromServerMess SMethod_WorkspaceApplyEdit r) = liftSession 
         pure DidChangeTextDocumentParams{..}
 
     editToChangeEvent :: TextEdit |? AnnotatedTextEdit -> TextDocumentContentChangeEvent
-    editToChangeEvent (InR e) = TextDocumentContentChangeEvent $ InL $ #range .== (e ^. range) .+ #rangeLength .== Nothing .+ #text .== (e ^. newText)
-    editToChangeEvent (InL e) = TextDocumentContentChangeEvent $ InL $ #range .== (e ^. range) .+ #rangeLength .== Nothing .+ #text .== (e ^. newText)
+    editToChangeEvent (InR e) = TextDocumentContentChangeEvent $ InL TextDocumentContentChangePartial{_rangeLength = Nothing, _range = e ^. LSP.range, _text = e ^. LSP.newText}
+    editToChangeEvent (InL e) = TextDocumentContentChangeEvent $ InL TextDocumentContentChangePartial{_rangeLength = Nothing, _range = e ^. LSP.range, _text = e ^. LSP.newText}
 
     getParamsFromDocumentChange :: DocumentChange -> Maybe DidChangeTextDocumentParams
     getParamsFromDocumentChange (InL textDocumentEdit) = getParamsFromTextDocumentEdit textDocumentEdit
@@ -222,7 +221,7 @@ handleServerMessage (FromServerMess SMethod_WorkspaceApplyEdit r) = liftSession 
     -- where n is the current version
     textDocumentVersions :: Uri -> Session [VersionedTextDocumentIdentifier]
     textDocumentVersions _uri = do
-        tail . iterate (version +~ 1) <$> getVersionedDoc TextDocumentIdentifier{_uri}
+        tail . iterate (LSP.version +~ 1) <$> getVersionedDoc TextDocumentIdentifier{_uri}
 
     textDocumentEdits :: Uri -> [TextEdit] -> Session [TextDocumentEdit]
     textDocumentEdits uri edits = do
@@ -245,8 +244,8 @@ handleServerMessage (FromServerMess SMethod_WorkspaceApplyEdit r) = liftSession 
     mergeParams :: [DidChangeTextDocumentParams] -> DidChangeTextDocumentParams
     mergeParams params =
         DidChangeTextDocumentParams
-            { _contentChanges = concat . toList $ toList . (^. contentChanges) <$> params
-            , _textDocument = head params ^. textDocument
+            { _contentChanges = concat . toList $ toList . (^. LSP.contentChanges) <$> params
+            , _textDocument = head params ^. LSP.textDocument
             }
 handleServerMessage (FromServerMess SMethod_WindowWorkDoneProgressCreate req) = liftSession . sendResponse req $ Right Null
 handleServerMessage _ = pure ()
@@ -274,10 +273,11 @@ sendResponse
     :: forall (method :: Method 'ServerToClient 'Request) m
      . (MonadSession m)
     => TRequestMessage method
-    -> Either ResponseError (MessageResult method)
+    -> Either (TResponseError method) (MessageResult method)
     -> m ()
-sendResponse TRequestMessage{..} _result =
-    liftSession . sendMessage $ FromClientRsp _method TResponseMessage{_id = Just _id, ..}
+sendResponse TRequestMessage{..} _result = liftSession . sendMessage $ FromClientRsp _method TResponseMessage{_id = Just _id, ..}
+
+-- {_id = Just _id, ..}
 
 -- | Sends a request to the server and synchronously waits for its response.
 request
@@ -292,13 +292,12 @@ request method params = liftSession $ do
     liftIO $ takeMVar done
 
 {- | Checks the response for errors and throws an exception if needed.
- Returns the result if successful.
+ Returns the result if successful.InitializeParams
 -}
-getResponseResult :: TResponseMessage m -> MessageResult m
-getResponseResult response = either err Prelude.id $ response ^. result
+getResponseResult :: (Show (ErrorData m)) => TResponseMessage m -> MessageResult m
+getResponseResult response = either err Prelude.id $ response ^. LSP.result
   where
-    lid = SomeLspId $ fromJust response._id
-    err = throw . UnexpectedResponseError lid
+    err = throw . UnexpectedResponseError (fromJust $ response ^. LSP.id)
 
 -- | Sends a notification to the server. Updates the VFS if the notification is a document update.
 sendNotification
@@ -356,8 +355,8 @@ clearNotificationCallback method =
 sendMessage :: (MonadSession m) => FromClientMessage -> m ()
 sendMessage msg = liftSession $ asks outgoing >>= liftIO . atomically . (`writeTQueue` msg)
 
-lspClientInfo :: Rec ("name" .== Text .+ "version" .== Maybe Text)
-lspClientInfo = #name .== "lsp-client" .+ #version .== Just CURRENT_PACKAGE_VERSION
+lspClientInfo :: ClientInfo
+lspClientInfo = ClientInfo{_name = "lsp-client", _version = Just CURRENT_PACKAGE_VERSION}
 
 {- | Performs the initialisation handshake and synchronously waits for its completion.
 When the function completes, the session is initialised.
@@ -376,8 +375,8 @@ initialize options = liftSession $ do
                 , _rootPath = Nothing
                 , _rootUri = InR Null
                 , _initializationOptions = options
-                , _capabilities = fullCaps
-                , _trace = Just TraceValues_Off
+                , _capabilities = fullLatestClientCaps
+                , _trace = Just TraceValue_Off
                 , _workspaceFolders = Nothing
                 }
     asks initialized >>= liftIO . atomically . flip putTMVar (getResponseResult response)
@@ -395,8 +394,8 @@ createDoc
     :: (MonadSession m)
     => FilePath
     -- ^ The path to the document to open, __relative to the root directory__.
-    -> Text
-    -- ^ The text document's language identifier, e.g. @"haskell"@.
+    -> LanguageKind
+    -- ^ The text document's language
     -> Text
     -- ^ The content of the text document to create.
     -> m TextDocumentIdentifier
@@ -420,15 +419,15 @@ createDoc file language contents = liftSession $ do
         fileMatches pattern = Glob.match (Glob.compile pattern) (if isAbsolute pattern then absFile else file)
 
         regHits :: TRegistration 'Method_WorkspaceDidChangeWatchedFiles -> Bool
-        regHits reg = any watchHits $ reg ^. registerOptions . _Just . watchers
+        regHits reg = any watchHits $ reg ^. LSP.registerOptions . _Just . LSP.watchers
 
         clientCapsSupports =
             clientCaps
-                ^? workspace
+                ^? LSP.workspace
                     . _Just
-                    . didChangeWatchedFiles
+                    . LSP.didChangeWatchedFiles
                     . _Just
-                    . dynamicRegistration
+                    . LSP.dynamicRegistration
                     . _Just
                 == Just True
         shouldSend = clientCapsSupports && foldl' (\acc r -> acc || regHits r) False regs
@@ -449,7 +448,7 @@ createDoc file language contents = liftSession $ do
 {- | Opens a text document that /exists on disk/, and sends a
  @textDocument/didOpen@ notification to the server.
 -}
-openDoc :: (MonadSession m) => FilePath -> Text -> m TextDocumentIdentifier
+openDoc :: (MonadSession m) => FilePath -> LanguageKind -> m TextDocumentIdentifier
 openDoc file language = liftSession $ do
     rootDir <- asks rootDir
     contents <- liftIO . Text.readFile $ rootDir </> file
@@ -458,7 +457,7 @@ openDoc file language = liftSession $ do
 {- | This is a variant of `openDoc` that takes the file content as an argument.
  Use this is the file exists /outside/ of the current workspace.
 -}
-openDoc' :: (MonadSession m) => FilePath -> Text -> Text -> m TextDocumentIdentifier
+openDoc' :: (MonadSession m) => FilePath -> LanguageKind -> Text -> m TextDocumentIdentifier
 openDoc' file language contents = liftSession $ do
     rootDir <- asks rootDir
     let _uri = filePathToUri $ rootDir </> file
@@ -484,14 +483,14 @@ closeDoc docId =
             DidCloseTextDocumentParams
                 { _textDocument =
                     TextDocumentIdentifier
-                        { _uri = docId ^. uri
+                        { _uri = docId ^. LSP.uri
                         }
                 }
 
 -- | Changes a text document and sends a @textDocument/didChange@ notification to the server.
 changeDoc :: (MonadSession m) => TextDocumentIdentifier -> [TextDocumentContentChangeEvent] -> m ()
 changeDoc docId _contentChanges = liftSession $ do
-    _textDocument <- getVersionedDoc docId <&> version +~ 1
+    _textDocument <- getVersionedDoc docId <&> LSP.version +~ 1
     sendNotification SMethod_TextDocumentDidChange DidChangeTextDocumentParams{..}
 
 -- | Gets the Uri for the file relative to the session's root directory.

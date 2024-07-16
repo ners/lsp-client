@@ -2,6 +2,7 @@
 
 ## 0.4.0.0  -- 2024-06-24
 
+* Update to lsp-2.7 and lsp-types-2.3
 * Introduce SessionT and MonadSession
 * Lift all functions to MonadSession
 * Session.initialize now takes LSP initialization options

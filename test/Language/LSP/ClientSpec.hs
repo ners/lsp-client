@@ -13,7 +13,6 @@ import Data.ByteString.Builder.Extra (defaultChunkSize)
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.Coerce (coerce)
 import Data.Maybe (fromJust)
-import Data.Row
 import Data.String (IsString)
 import Data.Tuple.Extra (thd3)
 import Language.LSP.Client
@@ -177,7 +176,7 @@ spec = do
                 LSP.documentContents doc `shouldReturn` Just ""
                 let content :: (IsString s) => s
                     content = "foo\n\nbar"
-                changeDoc doc [TextDocumentContentChangeEvent $ InR $ #text .== content]
+                changeDoc doc [TextDocumentContentChangeEvent $ InR TextDocumentContentChangeWholeDocument{_text = content}]
                 LSP.documentContents doc `shouldReturn` Just content
                 closeDoc doc
                 LSP.documentContents doc `shouldReturn` Nothing
