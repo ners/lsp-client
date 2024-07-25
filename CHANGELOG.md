@@ -5,7 +5,8 @@
 * Update to lsp-2.7 and lsp-types-2.3
 * Introduce SessionT and MonadSession
 * Lift all functions to MonadSession
-* Session.initialize now takes LSP initialization options
+* Session.initialize now takes LSP initialization options and returns the initialization result
+* Session state no longer holds initialization result
 * Add Session.getAllVersionedDocs
 
 ## 0.3.0.0  -- 2024-04-04

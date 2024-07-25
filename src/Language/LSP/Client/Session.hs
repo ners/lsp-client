@@ -50,9 +50,7 @@ import Prelude hiding (id)
 import Prelude qualified
 
 data SessionState = SessionState
-    { initialized :: TMVar InitializeResult
-    -- ^ The response of the initialization handshake, if any.
-    , pendingRequests :: TVar RequestMap
+    { pendingRequests :: TVar RequestMap
     -- ^ Response callbacks for sent requests waiting for a response. Once a response arrives the request is removed from this map.
     , notificationHandlers :: TVar NotificationMap
     -- ^ Notification callbacks that fire whenever a notification of their type is received.
@@ -74,7 +72,6 @@ data SessionState = SessionState
 
 defaultSessionState :: (MonadIO io) => VFS -> io SessionState
 defaultSessionState vfs' = liftIO $ do
-    initialized <- newEmptyTMVarIO
     pendingRequests <- newTVarIO emptyRequestMap
     notificationHandlers <- newTVarIO emptyNotificationMap
     lastRequestId <- newTVarIO 0
@@ -361,7 +358,7 @@ lspClientInfo = ClientInfo{_name = "lsp-client", _version = Just CURRENT_PACKAGE
 {- | Performs the initialisation handshake and synchronously waits for its completion.
 When the function completes, the session is initialised.
 -}
-initialize :: (MonadSession m) => Maybe Value -> m ()
+initialize :: (MonadSession m) => Maybe Value -> m InitializeResult
 initialize options = liftSession $ do
     pid <- liftIO getProcessID
     response <-
@@ -379,8 +376,8 @@ initialize options = liftSession $ do
                 , _trace = Just TraceValue_Off
                 , _workspaceFolders = Nothing
                 }
-    asks initialized >>= liftIO . atomically . flip putTMVar (getResponseResult response)
     sendNotification SMethod_Initialized InitializedParams
+    pure $ getResponseResult response
 
 {- | /Creates/ a new text document. This is different from 'openDoc'
  as it sends a @workspace/didChangeWatchedFiles@ notification letting the server
