@@ -1,6 +1,6 @@
 # Revision history for lsp-client
 
-## 0.4.0.0  -- 2024-06-24
+## 0.4.0.0  -- 2024-08-09
 
 * Update to lsp-2.7 and lsp-types-2.3
 * Introduce SessionT and MonadSession

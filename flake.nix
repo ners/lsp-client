@@ -40,22 +40,23 @@
           hps =
             lib.filterAttrs (ghc: _: elem ghc ghcs) pkgs.haskell.packages
             // { default = pkgs.haskellPackages; };
+          inherit (hps.default.${pname}) version;
           allPackages =
             pkgs.symlinkJoin {
-              inherit name;
+              name = "${pname}-all-${version}";
               paths = map (hp: hp.${pname}) (attrValues hps);
             };
-          docs = pkgs.haskell.lib.documentationTarball hps.default.${pname};
-          sdist = hps.default.cabalSdist { name = "${pname}.tar.gz"; inherit src; };
-          inherit (hps.default.${pname}) name;
-          default = pkgs.runCommand name { } ''
-            mkdir $out
-            cd $out
-            mkdir docs sdist
-            ln -s ${allPackages} ${name}
-            ln -s ${docs}/*.tar.gz docs/
-            ln -s ${sdist} sdist/${name}.tar.gz
-          '';
+          release = with pkgs.haskell.lib; pkgs.linkFarm "${pname}-release-${version}" {
+            sdist = sdistTarball hps.default.${pname};
+            docs = documentationTarball hps.default.${pname};
+          };
+          default = pkgs.symlinkJoin {
+            inherit (hps.default.${pname}) name;
+            paths = [
+              allPackages
+              release
+            ];
+          };
         in
         {
           formatter.${system} = pkgs.nixpkgs-fmt;
