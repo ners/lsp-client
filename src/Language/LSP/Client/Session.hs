@@ -19,10 +19,11 @@ import Control.Monad.State (StateT, execState)
 import Control.Monad.Trans.Class (MonadTrans, lift)
 import Data.Aeson (Value)
 import Data.Default (def)
-import Data.Foldable (foldl', foldr', forM_, toList)
+import Data.Foldable (foldr', forM_, toList)
 import Data.Function (on)
 import Data.Functor (void)
 import Data.Generics.Labels ()
+import Data.Dependent.Map qualified as DMap
 import Data.HashMap.Strict (HashMap)
 import Data.HashMap.Strict qualified as HashMap
 import Data.HashSet (HashSet)
@@ -54,6 +55,8 @@ data SessionState = SessionState
     -- ^ Response callbacks for sent requests waiting for a response. Once a response arrives the request is removed from this map.
     , notificationHandlers :: TVar NotificationMap
     -- ^ Notification callbacks that fire whenever a notification of their type is received.
+    , serverRequestHandlers :: TVar ServerRequestMap
+    -- ^ Request handlers for server-to-client requests. These return responses back to the server.
     , lastRequestId :: TVar Int32
     -- ^ A counter to send each request to the server is sent with a unique ID, allowing us to pair it back with its response.
     , serverCapabilities :: TVar (HashMap Text SomeRegistration)
@@ -74,6 +77,7 @@ defaultSessionState :: (MonadIO io) => VFS -> io SessionState
 defaultSessionState vfs' = liftIO $ do
     pendingRequests <- newTVarIO emptyRequestMap
     notificationHandlers <- newTVarIO emptyNotificationMap
+    serverRequestHandlers <- newTVarIO emptyServerRequestMap
     lastRequestId <- newTVarIO 0
     serverCapabilities <- newTVarIO mempty
     progressTokens <- newTVarIO mempty
@@ -239,10 +243,11 @@ handleServerMessage (FromServerMess SMethod_WorkspaceApplyEdit r) = liftSession 
         pure $ mapMaybe getParamsFromTextDocumentEdit edits
 
     mergeParams :: [DidChangeTextDocumentParams] -> DidChangeTextDocumentParams
-    mergeParams params =
+    mergeParams [] = error "Language.LSP.Client.handleServerMessage.mergeParams: empty list"
+    mergeParams params@(param : _) =
         DidChangeTextDocumentParams
             { _contentChanges = concat . toList $ toList . (^. LSP.contentChanges) <$> params
-            , _textDocument = head params ^. LSP.textDocument
+            , _textDocument = param ^. LSP.textDocument
             }
 handleServerMessage (FromServerMess SMethod_WindowWorkDoneProgressCreate req) = liftSession . sendResponse req $ Right Null
 handleServerMessage _ = pure ()
@@ -346,6 +351,40 @@ clearNotificationCallback method =
                 . flip
                     modifyTVarIO
                     ( removeNotificationCallback method
+                    )
+
+{- | Registers a callback for requests received from the server.
+The callback should return either an error or the result to send back to the server.
+-}
+receiveRequest
+    :: forall (method :: Method 'ServerToClient 'Request) m
+     . (TMessage method ~ TRequestMessage method, MonadSession m)
+    => SMethod method
+    -> (TMessage method -> IO (Either (TResponseError method) (MessageResult method)))
+    -> m ()
+receiveRequest method serverRequestCallback =
+    liftSession $
+        asks serverRequestHandlers
+            >>= liftIO
+                . flip
+                    modifyTVarIO
+                    ( DMap.insert method ServerRequestCallback{..}
+                    )
+
+{- | Clears the registered callback for the given server request method, if any.
+-}
+clearRequestCallback
+    :: forall (method :: Method 'ServerToClient 'Request) m
+     . (MonadSession m)
+    => SMethod method
+    -> m ()
+clearRequestCallback method =
+    liftSession $
+        asks serverRequestHandlers
+            >>= liftIO
+                . flip
+                    modifyTVarIO
+                    ( DMap.delete method
                     )
 
 -- | Queues a message to be sent to the server at the client's earliest convenience.
