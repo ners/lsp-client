@@ -19,7 +19,7 @@ import Data.IxMap (IxMap)
 import Data.IxMap qualified as IxMap
 import Data.Maybe (fromJust, fromMaybe)
 import Language.LSP.Client.Exceptions
-import Language.LSP.Protocol.Message (FromServerMessage, FromServerMessage' (FromServerMess, FromServerRsp), LspId, MessageDirection (..), MessageKind (..), Method, SClientMethod, SMethod, TNotificationMessage, TResponseMessage (..), parseServerMessage)
+import Language.LSP.Protocol.Message (FromServerMessage, FromServerMessage' (FromServerMess, FromServerRsp), LspId, MessageDirection (..), MessageKind (..), Method, MessageResult, SClientMethod, SMethod, TNotificationMessage, TRequestMessage, TResponseError, TResponseMessage (..), parseServerMessage)
 import System.IO (Handle, hGetLine)
 import System.IO.Error (isEOFError)
 import Prelude hiding (id)
@@ -62,6 +62,15 @@ emptyNotificationMap = mempty
 
 newtype NotificationCallback (m :: Method 'ServerToClient 'Notification) = NotificationCallback
     { notificationCallback :: TNotificationMessage m -> IO ()
+    }
+
+type ServerRequestMap = DMap SMethod ServerRequestCallback
+
+emptyServerRequestMap :: ServerRequestMap
+emptyServerRequestMap = mempty
+
+newtype ServerRequestCallback (m :: Method 'ServerToClient 'Request) = ServerRequestCallback
+    { serverRequestCallback :: TRequestMessage m -> IO (Either (TResponseError m) (MessageResult m))
     }
 
 instance Semigroup (NotificationCallback m) where

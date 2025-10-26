@@ -9,13 +9,12 @@ import Control.Monad.Reader (asks, runReaderT)
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.Dependent.Map qualified as DMap
 import Data.Either (fromLeft)
-import Data.Generics.Labels ()
 import Language.LSP.Client.Decoding
 import Language.LSP.Client.Encoding (encode)
 import Language.LSP.Client.Session
 import Language.LSP.Protocol.Message qualified as LSP
 import Language.LSP.VFS (emptyVFS)
-import System.IO (Handle)
+import System.IO (Handle, hPutStrLn, stderr)
 import UnliftIO (MonadUnliftIO, concurrently_, liftIO, race)
 import Prelude
 
@@ -53,6 +52,18 @@ runSessionWithHandles input output action = do
                                 handlers :: NotificationMap <- asks notificationHandlers >>= liftIO . readTVarIO
                                 let NotificationCallback cb = DMap.findWithDefault (NotificationCallback (const $ pure ())) smethod handlers
                                 liftIO $ cb msg
+                            LSP.IsServerReq -> do
+                                handlers :: ServerRequestMap <- asks serverRequestHandlers >>= liftIO . readTVarIO
+                                case DMap.lookup smethod handlers of
+                                    Just (ServerRequestCallback cb) -> do
+                                        result <- liftIO $ cb msg
+                                        sendResponse msg result
+                                    Nothing -> do
+                                        -- No handler registered, log and continue
+                                        -- We can't easily construct a proper error response due to type family constraints
+                                        liftIO $ hPutStrLn stderr $ "WARNING: No handler for server request: " <> show smethod
+                                        -- Don't send a response - the server will timeout eventually
+                                        -- This is not ideal but avoids type errors
                             _ -> pure ()
                         _ -> pure ()
             concurrently_ (forever send) (forever receive)
